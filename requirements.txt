@@ -1,0 +1,7 @@
+streamlit==1.39.0
+transformers==4.46.0
+torch>=2.14.0
+pandas>=2.2.0
+numpy>=2.1.0
+scikit-learn>=1.5.0
+beautifulsoup4>=4.12.0
