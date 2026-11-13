@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from src.score import TransparencyScorer
 from src.preprocess import clean_text, split_into_clauses
 from src.rules import RuleChecker
+from src.model import DarkPatternClassifier
 
 
 def test_preprocess():
@@ -161,6 +162,28 @@ def test_sample_files():
         print(f"  Clauses Analyzed: {result['clauses_analyzed']}")
 
 
+def test_binary_classifier():
+    """Smoke-test training and predictions with the included public dataset."""
+    print("=" * 60)
+    print("Testing Binary Dark-Pattern Classifier")
+    print("=" * 60)
+
+    classifier = DarkPatternClassifier()
+    predictions = classifier.predict_batch(
+        [
+            "HURRY! Only 2 left in stock.",
+            "Product information and shipping policy are available on this page.",
+        ]
+    )
+    assert predictions[0]["label"] == "dark_pattern"
+    assert predictions[1]["label"] == "none"
+    for prediction in predictions:
+        print(
+            f"  {prediction['label']} "
+            f"(dark-pattern probability: {prediction['dark_pattern_probability']:.1%})"
+        )
+
+
 def main():
     """Run all tests."""
     print("\n" + "=" * 60)
@@ -172,14 +195,15 @@ def main():
         test_rules()
         test_scorer()
         test_sample_files()
+        test_binary_classifier()
         
         print("=" * 60)
         print("All tests completed successfully!")
         print("=" * 60)
         print("\nTo run the Streamlit dashboard:")
         print("  streamlit run src/app.py")
-        print("\nTo train the AI model:")
-        print("  python -c \"from src.model import DarkPatternClassifier; c = DarkPatternClassifier(); c.train('data/labeled/darkpatterns.csv')\"")
+        print("\nTo train the binary classifier:")
+        print("  python -c \"from src.model import DarkPatternClassifier; DarkPatternClassifier().train()\"")
         
     except Exception as e:
         print(f"\nError during testing: {e}")

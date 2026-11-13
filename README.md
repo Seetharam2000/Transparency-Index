@@ -7,7 +7,7 @@ A web app that detects dark patterns in fintech app terms & conditions and produ
 - **Transparency Index Score**: Single score (0–100) rating the transparency of T&C text
 - **Grade Classification**: Transparent (75+), Caution (50–74), Risky (<50)
 - **Rule-Based Detection**: Regex-based checks for disclosure compliance
-- **AI Pattern Detection**: DistilBERT classifier for dark pattern detection
+- **ML Pattern Detection**: Binary TF-IDF/logistic-regression classifier for general dark-pattern signals
 - **Detailed Evidence**: Shows exactly which clauses triggered each check
 - **Stripe-Inspired UI**: Clean, professional fintech aesthetic
 
@@ -22,15 +22,17 @@ project-root/
 │   │   ├── transparent_app.txt
 │   │   ├── hidden_fees_app.txt
 │   │   └── misleading_rate_app.txt
-│   └── labeled/             # darkpatterns.csv (text,label)
-│       └── darkpatterns.csv
-├── models/                  # saved fine-tuned model
+│   └── labeled/
+│       ├── ec-darkpattern.tsv # e-commerce dark-pattern dataset (binary labels)
+│       └── EC-DARKPATTERN-LICENSE.txt
 └── src/
     ├── __init__.py
     ├── preprocess.py        # clean_text(), split_into_clauses()
     ├── rules.py              # rule-based disclosure/dark-pattern checks
-    ├── model.py               # DistilBERT classifier: train(), predict()
+    ├── model.py               # TF-IDF/logistic-regression binary classifier
     ├── score.py               # combines rules + model -> transparency_index()
+    ├── samples.py             # predefined fintech terms for analysis
+    ├── styles.py              # Streamlit dashboard styling
     └── app.py                  # Streamlit dashboard
 ```
 
@@ -59,18 +61,23 @@ python main.py
 
 This tests the core functionality without the UI.
 
-### Train the AI Model (Optional)
+### Classifier and Dataset
 
-To train the DistilBERT classifier on the labeled dataset:
+The app trains a lightweight TF-IDF/logistic-regression classifier on first use
+and caches it with Streamlit for the running app process. The source dataset is the
+[Yada et al. e-commerce dark-pattern dataset](https://github.com/yamanalab/ec-darkpattern)
+([paper](https://arxiv.org/abs/2211.06543)), included at
+`data/labeled/ec-darkpattern.tsv` under the upstream Apache 2.0 license. It has
+2,356 text examples from 1,248 page IDs, with balanced binary labels
+(`0` = not dark pattern, `1` = dark pattern). The dataset's original pattern
+categories are retained in the TSV but are not predicted by this binary model.
 
-```python
-from src.model import DarkPatternClassifier
-
-classifier = DarkPatternClassifier()
-classifier.train('data/labeled/darkpatterns.csv', epochs=3, batch_size=8)
-```
-
-The trained model will be saved to `models/distilbert_darkpattern/`
+The Model comparison tab reports Logistic Regression, Naive Bayes, and SVM
+metrics on a 25% holdout split grouped by `page_id`, reducing leakage between
+examples from the same source page. The production classifier is then fit on
+the full dataset. Model signals are general e-commerce indicators; they may
+not transfer to fintech terms and are shown as advisory, while the
+rule-based fintech disclosure checks remain separate.
 
 ## How It Works
 
@@ -89,17 +96,14 @@ Regex-based checks with weighted scores:
 - False urgency detection
 
 ### 3. AI Model (`model.py`)
-DistilBERT fine-tuned on labeled dataset with classes:
-- `none` - no dark pattern
-- `fee_obfuscation` - hidden/unclear fees
-- `false_urgency` - manipulative urgency
-- `hard_cancellation` - difficult cancellation
-- `misleading_rate` - unclear interest rates
+TF-IDF features with a logistic-regression binary classifier trained on the
+included e-commerce dataset. It predicts `none` or `dark_pattern`; it does not
+predict fintech-specific pattern categories.
 
 ### 4. Scoring (`score.py`)
-Combines rule score and model score (50/50 weight) into the final Transparency Index when a trained model is available. If the model is not run, the index uses the rule score alone:
+Combines rule score and model score (50/50 weight) into the final Transparency Index when the classifier runs. If it is not run, the index uses the rule score alone. Because the classifier is trained on e-commerce data, its contribution is advisory for fintech terms:
 - Rule score: 0–100 based on disclosure checks
-- Model score: 100 minus severity-weighted flagged clauses
+- Model score: 100 minus the mean predicted dark-pattern probability
 - Final index: Average of both scores when the model runs; otherwise the rule score
 - Detailed findings: Categorized rule-based risks and disclosure gaps with evidence and recommendations
 - Grade thresholds: 75+ Transparent, 50–74 Caution, <50 Risky
@@ -115,9 +119,8 @@ The app includes 3 sample fintech app T&C files:
 
 - Python 3.8+
 - Streamlit 1.39.0
-- Transformers 4.46.0
-- PyTorch 2.5.0
-- pandas, numpy, scikit-learn, beautifulsoup4
+- scikit-learn
+- beautifulsoup4
 
 ## License
 

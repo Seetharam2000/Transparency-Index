@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.score import TransparencyScorer
 from src.styles import load_css
 from src.samples import SAMPLE_APPS, samples_by_name
+from src.model import DarkPatternClassifier, evaluate_baselines
 
 DEMO_USERS = {
     "seetharam": "1234",
@@ -133,6 +134,10 @@ def render_results(result):
         """,
         unsafe_allow_html=True,
     )
+    st.caption(
+        "ML signals use an e-commerce dark-pattern dataset and are advisory for fintech terms; "
+        "review each passage in context."
+    )
 
     findings = result["findings"]
     st.markdown('<div class="result-heading">Detected categories</div>', unsafe_allow_html=True)
@@ -155,7 +160,7 @@ def render_results(result):
             for label, details in sorted(category_totals.items(), key=lambda item: item[0])
         ]
     else:
-        categories = [{"Category": "No rule-based issues found", "Count": 0, "Highest severity": "—"}]
+        categories = [{"Category": "No issues found", "Count": 0, "Highest severity": "—"}]
     st.dataframe(categories, use_container_width=True, hide_index=True)
 
     st.markdown('<div class="result-heading">Detailed findings</div>', unsafe_allow_html=True)
@@ -170,15 +175,21 @@ def render_results(result):
                 st.write(finding["explanation"])
                 st.markdown(f"**Evidence:** {html.escape(finding['evidence'])}")
                 st.markdown(f"**Recommended action:** {html.escape(finding['recommendation'])}")
+                if "confidence" in finding:
+                    st.caption(f"Classifier confidence: {finding['confidence']:.1%}")
     else:
-        st.success("No issues were detected by the available rule-based checks.")
+        st.success("No issues were detected by the available rule checks or classifier.")
 
     with st.expander("How this score is calculated"):
         if result["model_used"]:
-            st.write("The Transparency Index is the mean of the rule score and classifier score.")
+            st.write("The Transparency Index is the mean of the rule score and binary classifier score.")
             st.caption(
                 f"Rule score: {result['rule_score']} / 100 · "
                 f"Classifier score: {result['model_score']} / 100"
+            )
+            st.caption(
+                "The classifier is trained on e-commerce interface text, not financial terms. "
+                "Its predictions are general signals and may not transfer to fintech."
             )
         else:
             st.write(
@@ -207,48 +218,12 @@ def render_results(result):
 
 @st.cache_data
 def compare_models(dataset_path):
-    import csv
+    return evaluate_baselines(dataset_path)
 
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-    from sklearn.model_selection import train_test_split
-    from sklearn.naive_bayes import MultinomialNB
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.svm import LinearSVC
-    from sklearn.tree import DecisionTreeClassifier
 
-    with open(dataset_path, encoding="utf-8", newline="") as dataset_file:
-        rows = list(csv.DictReader(dataset_file))
-    texts = [row["text"] for row in rows]
-    labels = [row["label"] for row in rows]
-    train_texts, test_texts, train_labels, test_labels = train_test_split(
-        texts, labels, test_size=0.25, random_state=42, stratify=labels
-    )
-
-    vectorizer = TfidfVectorizer(ngram_range=(1, 2), max_features=5000)
-    train_features = vectorizer.fit_transform(train_texts)
-    test_features = vectorizer.transform(test_texts)
-    classifiers = [
-        ("Logistic Regression", LogisticRegression(max_iter=1000, random_state=42)),
-        ("Naive Bayes", MultinomialNB()),
-        ("Decision Tree", DecisionTreeClassifier(random_state=42)),
-        ("SVM", LinearSVC(random_state=42)),
-    ]
-
-    metrics = []
-    for name, classifier in classifiers:
-        classifier.fit(train_features, train_labels)
-        predictions = classifier.predict(test_features)
-        metrics.append(
-            {
-                "Model": name,
-                "Accuracy": accuracy_score(test_labels, predictions),
-                "Precision": precision_score(test_labels, predictions, average="macro", zero_division=0),
-                "Recall": recall_score(test_labels, predictions, average="macro", zero_division=0),
-                "F1": f1_score(test_labels, predictions, average="macro", zero_division=0),
-            }
-        )
-    return metrics, len(rows), len(test_texts)
+@st.cache_resource
+def get_classifier(dataset_path):
+    return DarkPatternClassifier(dataset_path)
 
 
 def render_login():
@@ -371,7 +346,7 @@ def render_dashboard():
                 else:
                     file_contents = None
                     file_digest = None
-                if uploaded_file is not None and st.session_state.get("uploaded_file_digest") != file_digest:
+                if file_contents is not None and st.session_state.get("uploaded_file_digest") != file_digest:
                     try:
                         st.session_state.terms_text = file_contents.decode("utf-8")
                     except UnicodeDecodeError:
@@ -408,8 +383,9 @@ def render_dashboard():
             else:
                 with st.spinner("Analyzing terms and conditions..."):
                     try:
-                        scorer = TransparencyScorer()
-                        st.session_state.analysis_result = scorer.calculate_index(text, use_model=False)
+                        dataset_path = Path(__file__).parent.parent / "data" / "labeled" / "ec-darkpattern.tsv"
+                        scorer = TransparencyScorer(model=get_classifier(str(dataset_path)))
+                        st.session_state.analysis_result = scorer.calculate_index(text)
                     except Exception as error:
                         st.error(f"Analysis failed: {error}")
 
@@ -431,11 +407,14 @@ def render_dashboard():
                     render_results(result)
 
     with comparison_tab:
-        st.markdown('<div class="section-title">Classifier performance</div>', unsafe_allow_html=True)
-        st.caption("Macro-averaged precision, recall, and F1 on a stratified 25% holdout split.")
-        dataset_path = Path(__file__).parent.parent / "data" / "labeled" / "darkpatterns.csv"
+        st.markdown('<div class="section-title">Binary classifier performance</div>', unsafe_allow_html=True)
+        st.caption(
+            "E-commerce dark-pattern vs. non-dark-pattern classification. "
+            "Metrics use a 25% holdout grouped by page_id to reduce source-site leakage."
+        )
+        dataset_path = Path(__file__).parent.parent / "data" / "labeled" / "ec-darkpattern.tsv"
         try:
-            metrics, sample_count, test_count = compare_models(str(dataset_path))
+            metrics, sample_count, test_count, group_count, test_group_count = compare_models(str(dataset_path))
         except Exception as error:
             st.error(f"Model comparison could not be calculated: {error}")
         else:
@@ -444,16 +423,16 @@ def render_dashboard():
                     {
                         "Model": row["Model"],
                         "Accuracy": f"{row['Accuracy']:.3f}",
-                        "Precision": f"{row['Precision']:.3f}",
-                        "Recall": f"{row['Recall']:.3f}",
+                        "Dark-pattern precision": f"{row['Precision']:.3f}",
+                        "Dark-pattern recall": f"{row['Recall']:.3f}",
                         "F1": f"{row['F1']:.3f}",
                     }
                     for row in metrics
                 ]
             )
             st.caption(
-                f"Evaluation uses {sample_count} labeled examples "
-                f"({test_count} held out; random state 42)."
+                f"Evaluation uses {sample_count} labeled examples across {group_count} source pages "
+                f"({test_count} examples from {test_group_count} pages held out; random state 42)."
             )
 
 

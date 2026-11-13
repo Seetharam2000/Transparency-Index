@@ -1,245 +1,142 @@
-import os
-import pandas as pd
-import torch
-from transformers import DistilBertTokenizerFast, DistilBertForSequenceClassification
-from transformers import Trainer, TrainingArguments
-from torch.utils.data import Dataset
-from sklearn.model_selection import train_test_split
-from typing import List, Dict, Optional, Tuple
-import numpy as np
+import csv
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+from sklearn.model_selection import GroupShuffleSplit
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.pipeline import Pipeline
+from sklearn.svm import LinearSVC
 
 
-class DarkPatternDataset(Dataset):
-    """PyTorch Dataset for dark pattern classification."""
-    
-    def __init__(self, texts, labels, tokenizer, max_length=128):
-        self.texts = texts
-        self.labels = labels
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-    
-    def __len__(self):
-        return len(self.texts)
-    
-    def __getitem__(self, idx):
-        text = str(self.texts[idx])
-        label = self.labels[idx]
-        
-        encoding = self.tokenizer(
-            text,
-            truncation=True,
-            padding='max_length',
-            max_length=self.max_length,
-            return_tensors='pt'
+DATASET_PATH = Path(__file__).parent.parent / "data" / "labeled" / "ec-darkpattern.tsv"
+RANDOM_STATE = 42
+
+
+def load_dataset(dataset_path: Optional[str] = None) -> Tuple[List[str], List[int], List[str]]:
+    """Load binary examples and source page IDs from the e-commerce TSV."""
+    path = Path(dataset_path) if dataset_path else DATASET_PATH
+    with path.open(encoding="utf-8", newline="") as dataset_file:
+        rows = list(csv.DictReader(dataset_file, delimiter="\t"))
+
+    required_columns = {"page_id", "text", "label"}
+    if not rows or not required_columns.issubset(rows[0]):
+        raise ValueError(f"{path} must contain TSV columns: {', '.join(sorted(required_columns))}")
+
+    texts: List[str] = []
+    labels: List[int] = []
+    page_ids: List[str] = []
+    for row_number, row in enumerate(rows, start=2):
+        text = row["text"].strip()
+        label = row["label"].strip()
+        page_id = row["page_id"].strip()
+        if not text or not page_id or label not in {"0", "1"}:
+            raise ValueError(f"Invalid text, page_id, or binary label on dataset row {row_number}")
+        texts.append(text)
+        labels.append(int(label))
+        page_ids.append(page_id)
+    if set(labels) != {0, 1}:
+        raise ValueError("The dataset must contain both binary labels 0 and 1.")
+    return texts, labels, page_ids
+
+
+def make_pipeline(classifier) -> Pipeline:
+    return Pipeline(
+        [
+            (
+                "tfidf",
+                TfidfVectorizer(
+                    lowercase=True,
+                    ngram_range=(1, 2),
+                    max_features=10000,
+                    min_df=2,
+                    sublinear_tf=True,
+                ),
+            ),
+            ("classifier", classifier),
+        ]
+    )
+
+
+def evaluate_baselines(dataset_path: Optional[str] = None):
+    """Evaluate baselines on a page-grouped holdout to reduce site leakage."""
+    texts, labels, page_ids = load_dataset(dataset_path)
+    splitter = GroupShuffleSplit(n_splits=1, test_size=0.25, random_state=RANDOM_STATE)
+    train_indices, test_indices = next(splitter.split(texts, labels, groups=page_ids))
+    train_groups = {page_ids[index] for index in train_indices}
+    test_groups = {page_ids[index] for index in test_indices}
+    if train_groups & test_groups:
+        raise RuntimeError("Grouped evaluation split leaked a page ID across train and test.")
+
+    train_texts = [texts[index] for index in train_indices]
+    train_labels = [labels[index] for index in train_indices]
+    test_texts = [texts[index] for index in test_indices]
+    test_labels = [labels[index] for index in test_indices]
+    if set(train_labels) != {0, 1} or set(test_labels) != {0, 1}:
+        raise ValueError("The grouped split must contain both labels in train and test.")
+
+    classifiers = [
+        ("Logistic Regression", LogisticRegression(max_iter=1000, class_weight="balanced", random_state=RANDOM_STATE)),
+        ("Naive Bayes", MultinomialNB()),
+        ("SVM", LinearSVC(class_weight="balanced", random_state=RANDOM_STATE)),
+    ]
+    metrics = []
+    for name, classifier in classifiers:
+        pipeline = make_pipeline(classifier)
+        pipeline.fit(train_texts, train_labels)
+        predictions = pipeline.predict(test_texts)
+        metrics.append(
+            {
+                "Model": name,
+                "Accuracy": accuracy_score(test_labels, predictions),
+                "Precision": precision_score(test_labels, predictions, average="binary", zero_division=0),
+                "Recall": recall_score(test_labels, predictions, average="binary", zero_division=0),
+                "F1": f1_score(test_labels, predictions, average="binary", zero_division=0),
+            }
         )
-        
-        return {
-            'input_ids': encoding['input_ids'].flatten(),
-            'attention_mask': encoding['attention_mask'].flatten(),
-            'labels': torch.tensor(label, dtype=torch.long)
-        }
+    return metrics, len(texts), len(test_texts), len(set(page_ids)), len(test_groups)
 
 
 class DarkPatternClassifier:
-    """
-    DistilBERT-based classifier for dark pattern detection.
-    Classes: none, fee_obfuscation, false_urgency, hard_cancellation, misleading_rate
-    """
-    
-    LABEL_MAP = {
-        'none': 0,
-        'fee_obfuscation': 1,
-        'false_urgency': 2,
-        'hard_cancellation': 3,
-        'misleading_rate': 4
-    }
-    
-    LABEL_NAMES = ['none', 'fee_obfuscation', 'false_urgency', 'hard_cancellation', 'misleading_rate']
-    
-    def __init__(self, model_path: Optional[str] = None):
-        self.model_path = model_path or 'models/distilbert_darkpattern'
-        self.tokenizer = None
-        self.model = None
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    def train(self, csv_path: str, epochs: int = 3, batch_size: int = 8):
-        """
-        Train the model on a labeled CSV dataset.
-        CSV should have columns: 'text', 'label'
-        """
-        print(f"Loading data from {csv_path}...")
-        df = pd.read_csv(csv_path)
-        
-        # Map labels to integers
-        df['label_id'] = df['label'].map(self.LABEL_MAP)
-        df = df.dropna(subset=['label_id'])
-        
-        # Split into train and validation
-        train_texts, val_texts, train_labels, val_labels = train_test_split(
-            df['text'].tolist(),
-            df['label_id'].tolist(),
-            test_size=0.2,
-            random_state=42,
-            stratify=df['label_id']
+    """TF-IDF/logistic-regression classifier for binary e-commerce patterns."""
+
+    LABEL_NAMES = {0: "none", 1: "dark_pattern"}
+    CONFIDENCE_THRESHOLD = 0.6
+
+    def __init__(self, dataset_path: Optional[str] = None):
+        self.dataset_path = Path(dataset_path) if dataset_path else DATASET_PATH
+        self.model: Optional[Pipeline] = None
+
+    def train(self) -> None:
+        """Fit on all labeled rows for analysis after evaluation is reported separately."""
+        texts, labels, _ = load_dataset(str(self.dataset_path))
+        self.model = make_pipeline(
+            LogisticRegression(max_iter=1000, class_weight="balanced", random_state=RANDOM_STATE)
         )
-        
-        # Initialize tokenizer
-        print("Initializing tokenizer...")
-        self.tokenizer = DistilBertTokenizerFast.from_pretrained('distilbert-base-uncased')
-        
-        # Create datasets
-        train_dataset = DarkPatternDataset(train_texts, train_labels, self.tokenizer)
-        val_dataset = DarkPatternDataset(val_texts, val_labels, self.tokenizer)
-        
-        # Initialize model
-        print("Initializing model...")
-        self.model = DistilBertForSequenceClassification.from_pretrained(
-            'distilbert-base-uncased',
-            num_labels=len(self.LABEL_MAP)
-        )
-        
-        # Training arguments
-        training_args = TrainingArguments(
-            output_dir=self.model_path,
-            num_train_epochs=epochs,
-            per_device_train_batch_size=batch_size,
-            per_device_eval_batch_size=batch_size,
-            warmup_steps=500,
-            weight_decay=0.01,
-            logging_dir=f'{self.model_path}/logs',
-            logging_steps=10,
-            evaluation_strategy='epoch',
-            save_strategy='epoch',
-            load_best_model_at_end=True,
-            metric_for_best_model='eval_loss',
-            greater_is_better=False,
-            no_cuda=not torch.cuda.is_available()
-        )
-        
-        # Initialize trainer
-        trainer = Trainer(
-            model=self.model,
-            args=training_args,
-            train_dataset=train_dataset,
-            eval_dataset=val_dataset
-        )
-        
-        # Train
-        print("Starting training...")
-        trainer.train()
-        
-        # Save model and tokenizer
-        print(f"Saving model to {self.model_path}...")
-        trainer.save_model(self.model_path)
-        self.tokenizer.save_pretrained(self.model_path)
-        
-        print("Training complete!")
-    
-    def load_model(self):
-        """Load a trained model from disk."""
-        if not os.path.exists(self.model_path):
-            raise FileNotFoundError(f"Model not found at {self.model_path}. Train first or provide correct path.")
-        
-        print(f"Loading model from {self.model_path}...")
-        self.tokenizer = DistilBertTokenizerFast.from_pretrained(self.model_path)
-        self.model = DistilBertForSequenceClassification.from_pretrained(self.model_path)
-        self.model.to(self.device)
-        self.model.eval()
-        print("Model loaded!")
-    
-    def predict(self, clauses: List[str]) -> List[Dict]:
-        """
-        Predict dark pattern labels for a list of text clauses.
-        Returns list of dicts with label, confidence, and original text.
-        """
-        if self.model is None or self.tokenizer is None:
-            self.load_model()
-        
-        results = []
-        
-        for clause in clauses:
-            # Tokenize
-            inputs = self.tokenizer(
-                clause,
-                truncation=True,
-                padding=True,
-                max_length=128,
-                return_tensors='pt'
-            )
-            inputs = {k: v.to(self.device) for k, v in inputs.items()}
-            
-            # Predict
-            with torch.no_grad():
-                outputs = self.model(**inputs)
-                logits = outputs.logits
-                probs = torch.softmax(logits, dim=-1)
-                confidence, predicted = torch.max(probs, dim=-1)
-            
-            label_name = self.LABEL_NAMES[predicted.item()]
-            confidence_score = confidence.item()
-            
-            results.append({
-                'text': clause,
-                'label': label_name,
-                'confidence': confidence_score
-            })
-        
-        return results
-    
+        self.model.fit(texts, labels)
+
     def predict_batch(self, clauses: List[str]) -> List[Dict]:
-        """Batch prediction for better performance."""
-        if self.model is None or self.tokenizer is None:
-            self.load_model()
-        
+        """Return binary predictions and dark-pattern probabilities for clauses."""
         if not clauses:
             return []
-        
-        # Tokenize all at once
-        inputs = self.tokenizer(
-            clauses,
-            truncation=True,
-            padding=True,
-            max_length=128,
-            return_tensors='pt'
-        )
-        inputs = {k: v.to(self.device) for k, v in inputs.items()}
-        
-        # Predict
-        with torch.no_grad():
-            outputs = self.model(**inputs)
-            logits = outputs.logits
-            probs = torch.softmax(logits, dim=-1)
-            confidences, predicted = torch.max(probs, dim=-1)
-        
-        results = []
-        for i, clause in enumerate(clauses):
-            label_name = self.LABEL_NAMES[predicted[i].item()]
-            confidence_score = confidences[i].item()
-            results.append({
-                'text': clause,
-                'label': label_name,
-                'confidence': confidence_score
-            })
-        
-        return results
+        if self.model is None:
+            self.train()
+        if self.model is None:
+            raise RuntimeError("Classifier training did not produce a fitted model.")
 
-
-if __name__ == "__main__":
-    # Test the classifier
-    classifier = DarkPatternClassifier()
-    
-    # Try to load existing model, or print message to train first
-    try:
-        classifier.load_model()
-        test_clauses = [
-            "Interest rate is 15% APR clearly stated.",
-            "Fees as applicable may be charged to your account.",
-            "Act now limited time offer expires today.",
-            "To cancel you must send written notice to head office."
-        ]
-        predictions = classifier.predict(test_clauses)
-        for pred in predictions:
-            print(f"Text: {pred['text'][:50]}...")
-            print(f"Label: {pred['label']}, Confidence: {pred['confidence']:.2f}\n")
-    except FileNotFoundError:
-        print("No trained model found. Train first using classifier.train('data/labeled/darkpatterns.csv')")
+        probabilities = self.model.predict_proba(clauses)
+        predictions = []
+        for clause, class_probabilities in zip(clauses, probabilities):
+            dark_probability = float(class_probabilities[1])
+            label = 1 if dark_probability >= self.CONFIDENCE_THRESHOLD else 0
+            predictions.append(
+                {
+                    "text": clause,
+                    "label": self.LABEL_NAMES[label],
+                    "confidence": dark_probability if label else 1 - dark_probability,
+                    "dark_pattern_probability": dark_probability,
+                }
+            )
+        return predictions

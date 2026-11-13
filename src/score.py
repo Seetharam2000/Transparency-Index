@@ -1,27 +1,16 @@
 import re
 from typing import Dict, List, Optional, Tuple
+from .model import DarkPatternClassifier
 from .rules import RuleChecker
 from .preprocess import clean_text, split_into_clauses
 
 
 class TransparencyScorer:
     """
-    Combines rule-based checks and AI model predictions into a single
+    Combines rule-based checks and binary model predictions into a single
     Transparency Index score (0-100).
     """
     
-    # Severity weights for different dark pattern types
-    SEVERITY_WEIGHTS = {
-        'none': 0,
-        'fee_obfuscation': 15,
-        'false_urgency': 10,
-        'hard_cancellation': 20,
-        'misleading_rate': 25
-    }
-    
-    # Confidence threshold for counting a prediction
-    CONFIDENCE_THRESHOLD = 0.6
-
     RULE_FINDING_DETAILS = {
         'vague_fee_language': {
             'category': 'Fee transparency',
@@ -88,10 +77,9 @@ class TransparencyScorer:
         },
     }
     
-    def __init__(self, model_path: Optional[str] = None):
+    def __init__(self, model: Optional[DarkPatternClassifier] = None):
         self.rule_checker = RuleChecker()
-        self.model_path = model_path
-        self.model = None  # Lazy load only when needed
+        self.model = model
     
     def calculate_index(self, text: str, use_model: bool = True) -> Dict:
         """
@@ -101,9 +89,9 @@ class TransparencyScorer:
         - transparency_index: final score (0-100)
         - grade: 'Transparent' / 'Caution' / 'Risky'
         - rule_score: rule-based score (0-100)
-        - model_score: AI model score (0-100), or None when not run
+        - model_score: binary classifier score (0-100), or None when not run
         - rule_results: detailed rule check results
-        - flagged_patterns: list of AI-detected dark patterns
+        - flagged_patterns: list of classifier-detected dark-pattern signals
         - findings: categorized rule-based risks and disclosure gaps
         - clauses_analyzed: number of clauses processed
         """
@@ -117,21 +105,14 @@ class TransparencyScorer:
         # Get rule-based score
         rule_score, rule_results = self.rule_checker.check_text(cleaned_text)
         
-        # Get AI model score
+        # Get binary classifier score
         model_used = False
         if use_model and clauses:
-            try:
-                # Lazy load model only when needed
-                if self.model is None:
-                    from .model import DarkPatternClassifier
-                    self.model = DarkPatternClassifier(self.model_path)
-                predictions = self.model.predict_batch(clauses)
-                model_score, flagged_patterns = self._calculate_model_score(predictions)
-                model_used = True
-            except Exception as e:
-                print(f"Model prediction failed: {e}")
-                model_score = None
-                flagged_patterns = []
+            if self.model is None:
+                self.model = DarkPatternClassifier()
+            predictions = self.model.predict_batch(clauses)
+            model_score, flagged_patterns = self._calculate_model_score(predictions)
+            model_used = True
         else:
             model_score = None
             flagged_patterns = []
@@ -153,12 +134,17 @@ class TransparencyScorer:
             'model_score': int(model_score) if model_score is not None else None,
             'rule_results': rule_results,
             'flagged_patterns': flagged_patterns,
-            'findings': self._build_findings(cleaned_text, rule_results),
+            'findings': self._build_findings(cleaned_text, rule_results, flagged_patterns),
             'model_used': model_used,
             'clauses_analyzed': clauses_analyzed
         }
 
-    def _build_findings(self, text: str, rule_results: List[Dict]) -> List[Dict]:
+    def _build_findings(
+        self,
+        text: str,
+        rule_results: List[Dict],
+        flagged_patterns: Optional[List[Dict]] = None,
+    ) -> List[Dict]:
         """Create actionable risk findings from rule failures and disclosure gaps."""
         results_by_rule = {result['rule']: result for result in rule_results}
         lowered_text = text.lower()
@@ -218,41 +204,46 @@ class TransparencyScorer:
                     else rule_result['evidence']
                 ),
             })
+
+        for pattern in flagged_patterns or []:
+            severity = "High" if pattern["confidence"] >= 0.8 else "Medium"
+            findings.append(
+                {
+                    "category": "General dark-pattern signal (e-commerce-trained)",
+                    "title": "Potential dark-pattern language",
+                    "severity": severity,
+                    "status": "ML signal — review in context",
+                    "explanation": (
+                        "The classifier detected language associated with dark patterns in an "
+                        "e-commerce dataset. This signal is not fintech-specific and may not "
+                        "indicate a financial disclosure violation."
+                    ),
+                    "evidence": pattern["text"],
+                    "recommendation": (
+                        "Review this passage in the context of the product and verify the claim "
+                        "before treating it as a dark pattern."
+                    ),
+                    "confidence": pattern["confidence"],
+                }
+            )
         return findings
     
     def _calculate_model_score(self, predictions: List[Dict]) -> Tuple[float, List[Dict]]:
         """
         Calculate model score from predictions.
-        Base score is 100, subtract severity-weighted points for
-        confidently-flagged dark patterns.
+        Score is 100 minus the mean predicted dark-pattern probability.
         """
         if not predictions:
-            return 50, []
-        
-        total_penalty = 0
+            return 100, []
+
+        mean_dark_probability = sum(
+            prediction["dark_pattern_probability"] for prediction in predictions
+        ) / len(predictions)
         flagged = []
-        
         for pred in predictions:
-            label = pred['label']
-            confidence = pred['confidence']
-            
-            # Only count high-confidence predictions
-            if label != 'none' and confidence >= self.CONFIDENCE_THRESHOLD:
-                severity = self.SEVERITY_WEIGHTS.get(label, 10)
-                # Penalty scales with confidence
-                penalty = severity * confidence
-                total_penalty += penalty
-                
-                flagged.append({
-                    'text': pred['text'],
-                    'label': label,
-                    'confidence': confidence,
-                    'severity': severity
-                })
-        
-        # Start at 100, subtract penalties, clamp to 0-100
-        model_score = max(0, min(100, 100 - total_penalty))
-        
+            if pred["label"] == "dark_pattern":
+                flagged.append(pred)
+        model_score = round(100 * (1 - mean_dark_probability))
         return model_score, flagged
     
     def _get_grade(self, score: int) -> str:
