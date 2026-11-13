@@ -97,10 +97,11 @@ DistilBERT fine-tuned on labeled dataset with classes:
 - `misleading_rate` - unclear interest rates
 
 ### 4. Scoring (`score.py`)
-Combines rule score and model score (50/50 weight) into final Transparency Index:
+Combines rule score and model score (50/50 weight) into the final Transparency Index when a trained model is available. If the model is not run, the index uses the rule score alone:
 - Rule score: 0–100 based on disclosure checks
 - Model score: 100 minus severity-weighted flagged clauses
-- Final index: Average of both scores
+- Final index: Average of both scores when the model runs; otherwise the rule score
+- Detailed findings: Categorized rule-based risks and disclosure gaps with evidence and recommendations
 - Grade thresholds: 75+ Transparent, 50–74 Caution, <50 Risky
 
 ## Sample Data

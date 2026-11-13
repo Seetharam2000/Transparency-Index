@@ -12,7 +12,7 @@ class RuleChecker:
     def __init__(self):
         self.rules = {
             'interest_rate_stated': {
-                'pattern': r'(interest\s+rate|apr|annual\s+percentage\s+rate).{0,50}?\d+(\.\d+)?%',
+                'pattern': r'(?:(interest\s+rate|apr|annual\s+percentage\s+rate).{0,50}?\d+(\.\d+)?%|\d+(\.\d+)?%\s*(?:interest|apr))',
                 'weight': 20,
                 'description': 'Interest rate/APR clearly stated with percentage',
                 'type': 'pass'

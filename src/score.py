@@ -1,4 +1,5 @@
-from typing import Dict, List, Tuple
+import re
+from typing import Dict, List, Optional, Tuple
 from .rules import RuleChecker
 from .preprocess import clean_text, split_into_clauses
 
@@ -20,8 +21,74 @@ class TransparencyScorer:
     
     # Confidence threshold for counting a prediction
     CONFIDENCE_THRESHOLD = 0.6
+
+    RULE_FINDING_DETAILS = {
+        'vague_fee_language': {
+            'category': 'Fee transparency',
+            'title': 'Fees are described vaguely',
+            'severity': 'High',
+            'explanation': 'The terms mention fees without clearly defining when or how much may be charged.',
+            'recommendation': 'List each possible fee, its amount or calculation method, and when it applies.',
+        },
+        'complex_cancellation': {
+            'category': 'Cancellation barriers',
+            'title': 'Cancellation may require a difficult process',
+            'severity': 'High',
+            'explanation': 'The terms appear to require written notice, mail, or a physical office to cancel.',
+            'recommendation': 'Provide a clear cancellation option through the app, website, email, or phone.',
+        },
+        'hidden_auto_renewal': {
+            'category': 'Renewal and billing',
+            'title': 'Automatic renewal or billing terms need attention',
+            'severity': 'High',
+            'explanation': 'Automatic renewal or charges are mentioned alongside restrictive refund language.',
+            'recommendation': 'Disclose renewal timing, upcoming charges, and a simple way to stop renewal.',
+        },
+        'false_urgency': {
+            'category': 'Pressure and urgency',
+            'title': 'Urgency language detected',
+            'severity': 'Medium',
+            'explanation': 'The terms use time pressure or scarcity language that may rush a decision.',
+            'recommendation': 'Use verifiable offer dates and avoid unsupported urgency claims.',
+        },
+        'interest_rate_stated': {
+            'category': 'Interest-rate disclosure',
+            'title': 'A clear interest rate was not found',
+            'severity': 'Medium',
+            'explanation': 'The text discusses borrowing or interest, but a clearly stated percentage rate was not found.',
+            'recommendation': 'State the applicable APR or interest rate and explain when variable rates can change.',
+        },
+        'total_cost_disclosed': {
+            'category': 'Total-cost disclosure',
+            'title': 'A total repayment or cost amount was not found',
+            'severity': 'High',
+            'explanation': 'The text describes a loan, payment plan, or subscription without a clear total cost.',
+            'recommendation': 'Show the total amount payable, including interest and mandatory fees.',
+        },
+        'fee_amounts_numeric': {
+            'category': 'Fee transparency',
+            'title': 'A numeric fee amount was not found',
+            'severity': 'Medium',
+            'explanation': 'Fees or charges are mentioned, but a specific amount or calculation was not found.',
+            'recommendation': 'Give an amount or a clear formula for each fee mentioned.',
+        },
+        'simple_cancellation': {
+            'category': 'Cancellation options',
+            'title': 'A simple cancellation option was not found',
+            'severity': 'Medium',
+            'explanation': 'Cancellation is mentioned, but no email, phone, online, or in-app method was found.',
+            'recommendation': 'Explain a direct, accessible way to cancel and when the request takes effect.',
+        },
+        'auto_renewal_optout': {
+            'category': 'Renewal and billing',
+            'title': 'A renewal opt-out method was not found',
+            'severity': 'High',
+            'explanation': 'Renewal is mentioned, but the terms do not clearly describe how to stop it.',
+            'recommendation': 'Explain how and when users can disable renewal before the next charge.',
+        },
+    }
     
-    def __init__(self, model_path: str = None):
+    def __init__(self, model_path: Optional[str] = None):
         self.rule_checker = RuleChecker()
         self.model_path = model_path
         self.model = None  # Lazy load only when needed
@@ -34,9 +101,10 @@ class TransparencyScorer:
         - transparency_index: final score (0-100)
         - grade: 'Transparent' / 'Caution' / 'Risky'
         - rule_score: rule-based score (0-100)
-        - model_score: AI model score (0-100)
+        - model_score: AI model score (0-100), or None when not run
         - rule_results: detailed rule check results
         - flagged_patterns: list of AI-detected dark patterns
+        - findings: categorized rule-based risks and disclosure gaps
         - clauses_analyzed: number of clauses processed
         """
         # Clean text
@@ -50,6 +118,7 @@ class TransparencyScorer:
         rule_score, rule_results = self.rule_checker.check_text(cleaned_text)
         
         # Get AI model score
+        model_used = False
         if use_model and clauses:
             try:
                 # Lazy load model only when needed
@@ -58,16 +127,21 @@ class TransparencyScorer:
                     self.model = DarkPatternClassifier(self.model_path)
                 predictions = self.model.predict_batch(clauses)
                 model_score, flagged_patterns = self._calculate_model_score(predictions)
+                model_used = True
             except Exception as e:
                 print(f"Model prediction failed: {e}")
-                model_score = 50  # neutral if model fails
+                model_score = None
                 flagged_patterns = []
         else:
-            model_score = 50  # neutral if no model
+            model_score = None
             flagged_patterns = []
         
-        # Combine scores (50/50 weight)
-        transparency_index = int((rule_score + model_score) / 2)
+        # Use the rule score on its own when no trained classifier is available.
+        transparency_index = (
+            int((rule_score + model_score) / 2)
+            if model_score is not None
+            else int(rule_score)
+        )
         
         # Determine grade
         grade = self._get_grade(transparency_index)
@@ -76,11 +150,75 @@ class TransparencyScorer:
             'transparency_index': transparency_index,
             'grade': grade,
             'rule_score': int(rule_score),
-            'model_score': int(model_score),
+            'model_score': int(model_score) if model_score is not None else None,
             'rule_results': rule_results,
             'flagged_patterns': flagged_patterns,
+            'findings': self._build_findings(cleaned_text, rule_results),
+            'model_used': model_used,
             'clauses_analyzed': clauses_analyzed
         }
+
+    def _build_findings(self, text: str, rule_results: List[Dict]) -> List[Dict]:
+        """Create actionable risk findings from rule failures and disclosure gaps."""
+        results_by_rule = {result['rule']: result for result in rule_results}
+        lowered_text = text.lower()
+        has_renewal = bool(re.search(
+            r'\b(?:automatically\s+renew|auto[-\s]?renew(?:s|ed|ing)?|'
+            r'subscription.{0,30}renew(?:s|ed|ing)?)\b|'
+            r'\bauto[-\s]?renewal\b.{0,40}\b(?:every|each|month|year|charge|payment|unless)\b',
+            lowered_text,
+        ))
+        has_fee_language = bool(re.search(r'\bfees?|charges?|penalt(?:y|ies)\b', lowered_text))
+        has_cancellation_language = bool(re.search(r'\bcancel|cancellation|termination\b', lowered_text))
+        has_credit_terms = bool(re.search(r'\binterest|apr|loan|borrow|advance\b', lowered_text))
+        has_total_cost_context = bool(re.search(
+            r'\bloan|borrow|advance|repayment|installment|subscription|membership|premium\b',
+            lowered_text,
+        ))
+
+        applicable_gaps = {
+            'interest_rate_stated': has_credit_terms,
+            'total_cost_disclosed': has_total_cost_context,
+            'fee_amounts_numeric': has_fee_language,
+            'simple_cancellation': has_cancellation_language,
+            'auto_renewal_optout': has_renewal,
+        }
+        findings = []
+        for rule_name, details in self.RULE_FINDING_DETAILS.items():
+            rule_result = results_by_rule.get(rule_name)
+            if not rule_result:
+                continue
+
+            risk_detected = rule_name in {
+                'vague_fee_language',
+                'complex_cancellation',
+                'hidden_auto_renewal',
+                'false_urgency',
+            } and rule_result['status'] == 'Fail'
+            disclosure_gap = (
+                rule_name in applicable_gaps
+                and applicable_gaps[rule_name]
+                and rule_result['status'] == 'Fail'
+            )
+            if not risk_detected and not disclosure_gap:
+                continue
+
+            # Avoid duplicating one issue as both a risk and a missing-disclosure finding.
+            if rule_name == 'fee_amounts_numeric' and results_by_rule['vague_fee_language']['status'] == 'Fail':
+                continue
+            if rule_name == 'simple_cancellation' and results_by_rule['complex_cancellation']['status'] == 'Fail':
+                continue
+
+            findings.append({
+                **details,
+                'status': 'Risk detected' if risk_detected else 'Disclosure gap',
+                'evidence': (
+                    'No matching disclosure was found in the submitted text.'
+                    if rule_result['evidence'] == 'No match found'
+                    else rule_result['evidence']
+                ),
+            })
+        return findings
     
     def _calculate_model_score(self, predictions: List[Dict]) -> Tuple[float, List[Dict]]:
         """

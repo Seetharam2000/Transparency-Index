@@ -99,7 +99,7 @@ def test_scorer():
     print(f"  Transparency Index: {result['transparency_index']}/100")
     print(f"  Grade: {result['grade']}")
     print(f"  Rule Score: {result['rule_score']}/100")
-    print(f"  Model Score: {result['model_score']}/100")
+    print("  Model Score: not run (rule-only analysis)")
     print(f"  Clauses Analyzed: {result['clauses_analyzed']}")
     
     print()
@@ -130,7 +130,7 @@ def test_scorer():
     print(f"  Transparency Index: {result['transparency_index']}/100")
     print(f"  Grade: {result['grade']}")
     print(f"  Rule Score: {result['rule_score']}/100")
-    print(f"  Model Score: {result['model_score']}/100")
+    print("  Model Score: not run (rule-only analysis)")
     print(f"  Clauses Analyzed: {result['clauses_analyzed']}")
     
     print()

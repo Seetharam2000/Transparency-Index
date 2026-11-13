@@ -5,7 +5,7 @@ from transformers import DistilBertTokenizerFast, DistilBertForSequenceClassific
 from transformers import Trainer, TrainingArguments
 from torch.utils.data import Dataset
 from sklearn.model_selection import train_test_split
-from typing import List, Dict, Tuple
+from typing import List, Dict, Optional, Tuple
 import numpy as np
 
 
@@ -56,7 +56,7 @@ class DarkPatternClassifier:
     
     LABEL_NAMES = ['none', 'fee_obfuscation', 'false_urgency', 'hard_cancellation', 'misleading_rate']
     
-    def __init__(self, model_path: str = None):
+    def __init__(self, model_path: Optional[str] = None):
         self.model_path = model_path or 'models/distilbert_darkpattern'
         self.tokenizer = None
         self.model = None
