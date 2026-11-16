@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Transparency Index",
+  "version": "1.0.0",
+  "description": "Review the transparency of terms and conditions on the page you are viewing.",
+  "permissions": ["activeTab", "scripting"],
+  "action": {
+    "default_title": "Analyze this page",
+    "default_popup": "popup.html"
+  }
+}

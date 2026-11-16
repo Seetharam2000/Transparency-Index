@@ -17,6 +17,12 @@ A web app that detects dark patterns in fintech app terms & conditions and produ
 project-root/
 ├── requirements.txt
 ├── main.py                  # CLI test entry point
+├── browser-extension/       # Chrome/Edge Manifest V3 extension
+│   ├── manifest.json
+│   ├── popup.html
+│   ├── popup.css
+│   ├── popup.js
+│   └── analyzer.js
 ├── data/
 │   ├── raw/                 # sample T&C .txt files
 │   │   ├── transparent_app.txt
@@ -60,6 +66,20 @@ python main.py
 ```
 
 This tests the core functionality without the UI.
+
+### Install the browser extension (Chrome/Edge desktop)
+
+1. Open `chrome://extensions` in Chrome or `edge://extensions` in Edge.
+2. Turn on **Developer mode**.
+3. Choose **Load unpacked** and select the `browser-extension` folder.
+4. Open a terms-and-conditions page, select the Transparency Index extension, and choose **Capture current page**.
+5. Review or edit the captured text, then choose **Analyze terms**.
+
+The extension analyzes text locally with the same weighted regex rules as the
+web app. It does not send page text to a server and does not include the Python
+machine-learning classifier. Browser extensions are generally not available in
+iPhone browsers and support on Android varies by browser; use the mobile-friendly
+Streamlit web app on phones.
 
 ### Classifier and Dataset
 
@@ -107,6 +127,9 @@ Combines rule score and model score (50/50 weight) into the final Transparency I
 - Final index: Average of both scores when the model runs; otherwise the rule score
 - Detailed findings: Categorized rule-based risks and disclosure gaps with evidence and recommendations
 - Grade thresholds: 75+ Transparent, 50–74 Caution, <50 Risky
+
+The Streamlit dashboard adapts its spacing, typography, tabs, and controls to
+narrow phone screens. On mobile, the dashboard columns stack vertically.
 
 ## Sample Data
 

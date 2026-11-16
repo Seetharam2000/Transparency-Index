@@ -320,6 +320,46 @@ def load_css():
             .block-container { padding: 16px 16px 32px; }
             .hero-title { font-size: 48px; }
         }
+
+        @media (max-width: 640px) {
+            .block-container { padding: 12px 14px 28px; }
+            .top-nav { padding-bottom: 20px; font-size: 10px; letter-spacing: 0.14em; }
+            .top-nav .links { word-spacing: 6px; }
+            .hero-title { font-size: clamp(42px, 13vw, 64px); }
+            .hero-copy { font-size: 14px; }
+            .hero-foot { margin-top: 20px; }
+            .app-header { display: block; margin-bottom: 16px; }
+            .app-header h1 { font-size: 19px; }
+            .app-header p { font-size: 13px; line-height: 1.5; }
+            .welcome-title { font-size: 24px; }
+            .score-number { font-size: 54px; }
+            .score-total { font-size: 14px; }
+            .section-title { font-size: 13px; letter-spacing: 0.1em; }
+            .result-heading { margin-top: 18px; }
+            [data-testid="stTabs"] [role="tablist"] {
+                overflow-x: auto;
+                flex-wrap: nowrap;
+            }
+            [data-testid="stTabs"] button[role="tab"] {
+                flex: 0 0 auto;
+                white-space: nowrap;
+                padding: 8px 10px;
+                font-size: 12px;
+            }
+            input, textarea, [data-baseweb="select"] > div {
+                font-size: 16px !important;
+            }
+            .stButton > button { min-height: 44px; letter-spacing: 0.08em; }
+            [data-testid="stDataFrame"], [data-testid="stTable"] { max-width: 100%; }
+        }
+
+        @media (max-width: 380px) {
+            .block-container { padding-right: 10px; padding-left: 10px; }
+            .top-nav { letter-spacing: 0.08em; }
+            .top-nav .links { word-spacing: 2px; }
+            .hero-kicker { font-size: 10px; letter-spacing: 0.18em; }
+            .score-number { font-size: 48px; }
+        }
         </style>
         """,
         unsafe_allow_html=True,

@@ -42,7 +42,7 @@ class RuleChecker:
                 'type': 'pass'
             },
             'complex_cancellation': {
-                'pattern': r'(cancel|termination).{0,50}(written|mail|head\s+office|physical\s+location)',
+                'pattern': r'(cancel|termination).{0,50}(written|\bmail\b|head\s+office|physical\s+location)',
                 'weight': -15,
                 'description': 'Cancellation requires complex written process',
                 'type': 'fail'

@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Transparency Index</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">FINTECH · TRANSPARENCY AUDIT</p>
+        <h1>Transparency Index</h1>
+        <p class="subhead">Check terms and conditions on the current page.</p>
+      </header>
+
+      <button id="capture" class="secondary" type="button">Capture current page</button>
+      <label for="terms">Page text</label>
+      <textarea id="terms" rows="8" placeholder="Capture the current page or paste terms here."></textarea>
+      <button id="analyze" type="button">Analyze terms</button>
+      <p class="privacy">Analysis runs locally in this extension. Page text is not sent anywhere.</p>
+
+      <section id="result" aria-live="polite" hidden>
+        <div class="score-card">
+          <div class="score-line"><strong id="score">--</strong><span>/ 100</span></div>
+          <div id="grade" class="grade"></div>
+          <div class="meter"><div id="meter-fill"></div></div>
+          <p id="clause-count" class="muted"></p>
+        </div>
+        <h2>Findings</h2>
+        <ul id="findings"></ul>
+        <details>
+          <summary>All disclosure checks</summary>
+          <ul id="checks"></ul>
+        </details>
+        <p class="disclaimer">Rule-based screening only; not legal advice. This extension does not run the web app's ML classifier.</p>
+      </section>
+      <p id="message" role="status" hidden></p>
+    </main>
+    <script src="analyzer.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>
